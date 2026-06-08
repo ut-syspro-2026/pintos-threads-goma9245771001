@@ -77,10 +77,15 @@ int64_t timer_elapsed(int64_t then) { return timer_ticks() - then; }
 /** Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void timer_sleep(int64_t ticks) {
+  enum intr_level old_level = intr_disable();
   int64_t start = timer_ticks();
 
-  ASSERT(intr_get_level() == INTR_ON);
-  while (timer_elapsed(start) < ticks) thread_yield();
+  struct thread *cur = thread_current();
+  cur->sleep_until = start + ticks;
+  cur->sleeping = true;
+  thread_block();
+  
+  intr_set_level(old_level);
 }
 
 /** Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -127,9 +132,16 @@ void timer_print_stats(void) {
   printf("Timer: %" PRId64 " ticks\n", timer_ticks());
 }
 
+void sleep_to_ready_if_needed(struct thread *t, void *aux) {
+   if(t->sleeping && t->status == THREAD_BLOCKED && t->sleep_until <= ticks) {
+      thread_unblock(t);
+   }
+}
+
 /** Timer interrupt handler. */
 static void timer_interrupt(struct intr_frame *args UNUSED) {
   ticks++;
+  thread_foreach(sleep_to_ready_if_needed, NULL);
   thread_tick();
 }
 
