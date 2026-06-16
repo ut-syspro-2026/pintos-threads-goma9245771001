@@ -109,6 +109,7 @@ void sema_up(struct semaphore *sema) {
         list_entry(list_pop_front(&sema->waiters), struct thread, elem));
   sema->value++;
   intr_set_level(old_level);
+  yield_if_low_priority();
 }
 
 static void sema_test_helper(void *sema_);

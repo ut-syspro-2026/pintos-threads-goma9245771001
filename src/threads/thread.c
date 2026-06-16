@@ -188,6 +188,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function,
 
   /* Add to run queue. */
   thread_unblock(t);
+  yield_if_low_priority();
 
   return tid;
 }
@@ -221,7 +222,7 @@ void thread_unblock(struct thread *t) {
 
   old_level = intr_disable();
   ASSERT(t->status == THREAD_BLOCKED);
-  list_push_back(&ready_list, &t->elem);
+  list_insert_ordered(&ready_list, &t->elem, priority_greater, NULL);
   t->status = THREAD_READY;
   t->sleeping = false;
   intr_set_level(old_level);
@@ -278,7 +279,7 @@ void thread_yield(void) {
   ASSERT(!intr_context());
 
   old_level = intr_disable();
-  if (cur != idle_thread) list_push_back(&ready_list, &cur->elem);
+  if (cur != idle_thread) list_insert_ordered(&ready_list, &cur->elem, priority_greater, NULL);
   cur->status = THREAD_READY;
   schedule();
   intr_set_level(old_level);
@@ -300,6 +301,7 @@ void thread_foreach(thread_action_func *func, void *aux) {
 /** Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority) {
   thread_current()->priority = new_priority;
+  yield_if_low_priority();
 }
 
 /** Returns the current thread's priority. */
@@ -509,3 +511,21 @@ static tid_t allocate_tid(void) {
 /** Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof(struct thread, stack);
+
+bool priority_greater(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+  const struct thread *a_thread = list_entry(a, struct thread, elem);
+  const struct thread *b_thread = list_entry(b, struct thread, elem);
+  return a_thread->priority > b_thread->priority;
+}
+
+void yield_if_low_priority() {
+  if (!list_empty(&ready_list)) {
+    struct thread *highest_priority = list_entry(list_begin(&ready_list), struct thread, elem);
+    if (highest_priority->priority > thread_current()->priority) {if (intr_context()) {
+        intr_yield_on_return();
+      } else {
+        thread_yield();
+      }
+    }
+  }
+}
