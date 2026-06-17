@@ -85,10 +85,14 @@ struct thread {
   enum thread_status status; /**< Thread state. */
   char name[16];             /**< Name (for debugging purposes). */
   uint8_t *stack;            /**< Saved stack pointer. */
-  int priority;              /**< Priority. */
+  int priority;              /**< donationを考慮した優先度 */
+  int base_priority;         /**< 優先度 */
   struct list_elem allelem;  /**< List element for all threads list. */
   bool sleeping;
   int64_t sleep_until;       /**< sleepから起こす時刻 */
+
+  struct lock *lock_waiting; /**< 待っているlock */
+  struct list locks_held;    /**< 握っているlock */
 
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /**< List element. */

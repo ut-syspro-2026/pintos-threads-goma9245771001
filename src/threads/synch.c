@@ -65,7 +65,7 @@ void sema_down(struct semaphore *sema) {
 
   old_level = intr_disable();
   while (sema->value == 0) {
-    list_push_back(&sema->waiters, &thread_current()->elem);
+    list_insert_ordered(&sema->waiters, &thread_current()->elem, priority_greater, NULL);
     thread_block();
   }
   sema->value--;
@@ -165,6 +165,30 @@ void lock_init(struct lock *lock) {
   sema_init(&lock->semaphore, 1);
 }
 
+void update_priority_donation(struct thread *thr) {
+  // thrのpriorityを再計算
+  // thrが握っているlockの中のwaiterの中で最大の優先度 と base_priority のmaxを自分に適用する
+  int max_priority = thr->base_priority;
+  if (!list_empty(&thr->locks_held)) {
+    struct list_elem *e;
+    for (e = list_begin(&thr->locks_held); e != list_end(&thr->locks_held); e = list_next(e)) {
+      struct lock *l = list_entry(e, struct lock, elem);
+      if (!list_empty(&l->semaphore.waiters)) {
+        struct list_elem *e;
+        for (e = list_begin(&l->semaphore.waiters); 
+             e != list_end(&l->semaphore.waiters); 
+             e = list_next(e)) {
+          struct thread *waiter = list_entry(e, struct thread, elem);
+          if (waiter->priority > max_priority) {
+            max_priority = waiter->priority;
+          }
+        }
+      }
+    }
+  }
+  thr->priority = max_priority;
+}
+
 /** Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -174,12 +198,41 @@ void lock_init(struct lock *lock) {
    interrupts disabled, but interrupts will be turned back on if
    we need to sleep. */
 void lock_acquire(struct lock *lock) {
+  enum intr_level old_level;
   ASSERT(lock != NULL);
   ASSERT(!intr_context());
   ASSERT(!lock_held_by_current_thread(lock));
 
+  old_level = intr_disable(); // 割り込み禁止
+  struct thread *cur = thread_current();
+
+  // 自分が待っているlockを握っているthread、それの待っているlockを握っているthreadと辿っていき、それぞれにpriority donation
+  if (lock->holder != NULL) {
+    cur->lock_waiting = lock;
+    struct thread *h = lock->holder;
+    while (h != NULL) {
+      if (cur->priority > h->priority) {
+        h->priority = cur->priority;
+      }
+      if (h->lock_waiting != NULL) {
+        h = h->lock_waiting->holder;
+      } else {
+        h = NULL;
+      }
+    }
+  }
+  
+  // lockが取れるまで待つ
   sema_down(&lock->semaphore);
-  lock->holder = thread_current();
+
+  // lockが取れたのでもろもろ更新
+  list_push_back(&cur->locks_held, &lock->elem);
+  cur->lock_waiting = NULL;
+  lock->holder = cur;
+
+  update_priority_donation(cur);
+
+  intr_set_level(old_level);
 }
 
 /** Tries to acquires LOCK and returns true if successful or false
@@ -205,11 +258,27 @@ bool lock_try_acquire(struct lock *lock) {
    make sense to try to release a lock within an interrupt
    handler. */
 void lock_release(struct lock *lock) {
+  enum intr_level old_level;
   ASSERT(lock != NULL);
   ASSERT(lock_held_by_current_thread(lock));
 
+  old_level = intr_disable();
+
+  struct thread *cur = thread_current();
+
+  list_remove(&lock->elem); // curのlocks_heldからlockを消す
   lock->holder = NULL;
+
+  update_priority_donation(cur);
+  struct thread *h = cur;
+  while (h->lock_waiting != NULL) {
+    h = h->lock_waiting->holder;
+    update_priority_donation(h);
+  }
+
   sema_up(&lock->semaphore);
+  intr_set_level(old_level);
+
 }
 
 /** Returns true if the current thread holds LOCK, false
